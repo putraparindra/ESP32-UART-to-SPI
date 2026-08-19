@@ -33,6 +33,11 @@ set DP_RAM_PATCH "D:/uart2spi/dp_ram_wrap_patched.sv"
 set SP_RAM_COMPONENT_PATCH "D:/uart2spi/sp_ram_patched.sv"
 set DP_RAM_COMPONENT_PATCH "D:/uart2spi/dp_ram_patched.sv"
 
+## Top module BARU: zybo_top.sv, membungkus "pulpino" dan cuma
+## mengekspos 8 sinyal yang kita pakai. Lihat catatan di file itu --
+## ini memperbaiki error "IO placement infeasible: 139 ports > 50 pins".
+set ZYBO_TOP "D:/uart2spi/zybo_top.sv"
+
 ## ---------------------------------------------------------------------
 ## Helper: cari file rekursif (Tcl tidak punya glob ** bawaan)
 ## Dipindah ke ATAS supaya bisa dipakai di pengecekan langkah 0.
@@ -128,6 +133,7 @@ lappend rtl_files $SP_RAM_PATCH
 lappend rtl_files $DP_RAM_PATCH
 lappend rtl_files $SP_RAM_COMPONENT_PATCH
 lappend rtl_files $DP_RAM_COMPONENT_PATCH
+lappend rtl_files $ZYBO_TOP
 
 if { [llength $rtl_files] == 0 } {
     puts "ERROR: tidak ada file RTL ditemukan di $REPO/rtl atau $REPO/ips."
@@ -186,7 +192,7 @@ add_files -fileset constrs_1 -norecurse [list $XDC]
 ## ---------------------------------------------------------------------
 ## 5. Set top module ke "pulpino" (dari fpga/rtl/pulpino_wrap.v)
 ## ---------------------------------------------------------------------
-set_property top pulpino [current_fileset]
+set_property top zybo_top [current_fileset]
 update_compile_order -fileset sources_1
 
 ## ---------------------------------------------------------------------

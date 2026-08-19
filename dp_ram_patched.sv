@@ -1,9 +1,6 @@
-// PATCHED VERSION -- lihat catatan di bawah
-//
-// Sama seperti sp_ram.sv, versi asli file ini (rtl/components/dp_ram.sv)
-// memakai array packed 2D (logic [3:0][7:0] mem[words]) yang membingungkan
-// heuristik auto-inferensi BRAM Vivado. Patch ini menambahkan atribut
-// (* ram_style = "block" *) untuk memaksa pemetaan ke Block RAM fisik.
+// PATCHED VERSION v2 -- lihat catatan di sp_ram_patched_v2.sv, alasan
+// sama: array 1D flat sesuai template resmi Xilinx UG901, bukan lagi
+// nested 2D packed array yang gagal ke-infer jadi BRAM.
 //
 // Copyright 2017 ETH Zurich and University of Bologna.
 // Copyright and related rights are licensed under the Solderpad Hardware
@@ -19,7 +16,6 @@ module dp_ram
   #(
     parameter ADDR_WIDTH = 8
   )(
-    // Clock and Reset
     input  logic clk,
 
     input  logic                   en_a_i,
@@ -39,37 +35,30 @@ module dp_ram
 
   localparam words = 2**ADDR_WIDTH;
 
-  (* ram_style = "block" *) logic [3:0][7:0] mem[words];
+  (* ram_style = "block" *) logic [31:0] mem [0:words-1];
 
-  always @(posedge clk)
-  begin
-    if (en_a_i && we_a_i)
-    begin
-      if (be_a_i[0])
-        mem[addr_a_i][0] <= wdata_a_i[7:0];
-      if (be_a_i[1])
-        mem[addr_a_i][1] <= wdata_a_i[15:8];
-      if (be_a_i[2])
-        mem[addr_a_i][2] <= wdata_a_i[23:16];
-      if (be_a_i[3])
-        mem[addr_a_i][3] <= wdata_a_i[31:24];
+  integer i;
+
+  always_ff @(posedge clk) begin
+    if (en_a_i) begin
+      if (we_a_i) begin
+        for (i = 0; i < 4; i = i + 1) begin
+          if (be_a_i[i])
+            mem[addr_a_i][i*8 +: 8] <= wdata_a_i[i*8 +: 8];
+        end
+      end
+      rdata_a_o <= mem[addr_a_i];
     end
 
-    rdata_a_o <= mem[addr_a_i];
-
-    if (en_b_i && we_b_i)
-    begin
-      if (be_b_i[0])
-        mem[addr_b_i][0] <= wdata_b_i[7:0];
-      if (be_b_i[1])
-        mem[addr_b_i][1] <= wdata_b_i[15:8];
-      if (be_b_i[2])
-        mem[addr_b_i][2] <= wdata_b_i[23:16];
-      if (be_b_i[3])
-        mem[addr_b_i][3] <= wdata_b_i[31:24];
+    if (en_b_i) begin
+      if (we_b_i) begin
+        for (i = 0; i < 4; i = i + 1) begin
+          if (be_b_i[i])
+            mem[addr_b_i][i*8 +: 8] <= wdata_b_i[i*8 +: 8];
+        end
+      end
+      rdata_b_o <= mem[addr_b_i];
     end
-
-    rdata_b_o <= mem[addr_b_i];
   end
 
 endmodule
