@@ -1,207 +1,194 @@
-<img src="https://raw.githubusercontent.com/pulp-platform/pulpino/master/doc/datasheet/figures/pulpino_logo_inline1.png" width="400px" />
+# UART-to-SPI Bridge (ESP32) ke SPI Slave PULPino di ZYBO
+
+Project ini menghubungkan **komputer** ke **SPI Slave milik SoC PULPino** (RISC-V, diimplementasikan di FPGA ZYBO/Zynq-7010) lewat **ESP32** sebagai jembatan protokol UART-ke-SPI. Hasil akhirnya: menyalakan LED fisik di board ZYBO dengan menulis register GPIO PULPino dari komputer, murni lewat jalur SPI eksternal — tanpa software apa pun yang berjalan di dalam core RISC-V.
+
+```
+Python (komputer) --USB/UART--> ESP32 (SPI Master) --SPI--> SPI Slave PULPino
+                                                                    |
+                                                                    v
+                                                     AXI4 Interconnect -> APB -> GPIO -> LED
+```
 
-# Introduction
+## Daftar Isi
 
-PULPino is an open-source single-core microcontroller system, based on 32-bit
-RISC-V cores developed at ETH Zurich. PULPino is configurable to use either 
-the RISCY or the zero-riscy core.
+- [Arsitektur](#arsitektur)
+- [Kebutuhan Hardware](#kebutuhan-hardware)
+- [Kebutuhan Software](#kebutuhan-software)
+- [Struktur Repository](#struktur-repository)
+- [Tutorial Lengkap](#tutorial-lengkap)
+  1. [Menyiapkan Repository PULPino](#1-menyiapkan-repository-pulpino)
+  2. [Build FPGA dengan Vivado](#2-build-fpga-dengan-vivado)
+  3. [Program FPGA lewat JTAG](#3-program-fpga-lewat-jtag)
+  4. [Upload Firmware ke ESP32](#4-upload-firmware-ke-esp32)
+  5. [Wiring Fisik ESP32 ke Pmod JE](#5-wiring-fisik-esp32-ke-pmod-je)
+  6. [Menjalankan Skrip Python](#6-menjalankan-skrip-python)
+- [Protokol SPI Slave PULPino](#protokol-spi-slave-pulpino)
+- [Masalah yang Ditemukan & Cara Mengatasinya](#masalah-yang-ditemukan--cara-mengatasinya)
+- [Referensi](#referensi)
+- [Lisensi](#lisensi)
 
-RISCY is an in-order, single-issue core with 4 pipeline stages and it has
-an IPC close to 1, full support for the base integer instruction set (RV32I),
-compressed instructions (RV32C) and multiplication instruction set
-extension (RV32M). It can be configured to have single-precision floating-point
-instruction set extension (RV32F). It implements several ISA extensions such as:
-hardware loops, post-incrementing load and store instructions, bit-manipulation
-instructions, MAC operations, support fixed-point operations, packed-SIMD instructions
-and the dot product. It has been designed to increase the energy efficiency of
-in ultra-low-power signal processing applications.
-RISCY implementes a subset of the 1.9 privileged specification.
-Further informations can be found in http://ieeexplore.ieee.org/abstract/document/7864441/.
+---
 
-zero-riscy is an in-order, single-issue core with 2 pipeline stages and it has
-full support for the base integer instruction set (RV32I) and 
-compressed instructions (RV32C). It can be configured to have multiplication instruction set
-extension (RV32M) and the reduced number of registers extension (RV32E).
-It has been designed to target ultra-low-power and ultra-low-area constraints.
-zero-riscy implementes a subset of the 1.9 privileged specification.
+## Arsitektur
 
-When the core is idle, the platform can be put into a low power mode, 
-where only a simple event unit is active and everything else is clock-gated and consumes minimal power (leakage).
-A specialized event unit wakes up the core in case an event/interrupt arrives.
+| Komponen | Peran |
+|---|---|
+| **Python** (`pulpino_gpio_led.py`) | Menyusun transaksi SPI (command + address + data), mengirim lewat USB-Serial |
+| **ESP32** (`uart_to_spi_master/uart_to_spi_master.ino`) | SPI Master, menjembatani UART <-> SPI dengan framing `[START][LEN][PAYLOAD][CHECKSUM]`, CS tetap LOW sepanjang satu transaksi |
+| **SPI Slave PULPino** | Peripheral aktif di PULPino dengan akses AXI langsung ke memori/peripheral — tidak butuh core RISC-V berjalan |
+| **AXI4 / APB** | Interconnect PULPino yang menjembatani SPI Slave ke peripheral GPIO |
+| **GPIO PULPino** | Register `PADDIR` (arah pin) dan `PADOUT` (nilai output) yang dikendalikan lewat SPI |
+| **LED0 (LD0)** | Output fisik di board ZYBO, terhubung ke `gpio_out[0]` |
+
+## Kebutuhan Hardware
 
-For communication with the outside world, PULPino contains a broad set of
-peripherals, including I2S, I2C, SPI and UART. The platform internal devices
-can be accessed from outside via JTAG and SPI which allows pre-loading
-RAMs with executable code. In standalone mode, the platform boots from an
-internal boot ROM and loads its program from an external SPI flash.
+- Board **Digilent ZYBO** (Zynq-7010, revisi original — bukan ZYBO Z7)
+- **ESP32 Dev Module** (chip ESP32 klasik)
+- Kabel jumper **female-to-male** (Pmod JE female, pin ESP32 male)
+- 2x kabel USB (satu untuk ZYBO/JTAG via port J11, satu untuk ESP32)
 
-The PULPino platform is available for RTL simulation as well FPGA.
-PULPino has been taped-out as an ASIC in UMC 65nm in January 2016. It has full
-debug support on all targets. In addition we support extended profiling with
-source code annotated execution times through KCacheGrind in RTL simulations.
+## Kebutuhan Software
 
+- **Vivado 2025.2** (atau versi kompatibel) dengan board file ZYBO terinstall
+- **Arduino IDE** dengan board package `esp32` (Espressif)
+- **Python 3** + `pyserial` (`pip install pyserial`)
+- **Git**
 
-## Requirements
+## Struktur Repository
 
-PULPino has the following requirements
+```
+uart2spi/
+├── rtl/, ips/, fpga/, sw/, tb/, doc/   <- source resmi PULPino (pulp-platform/pulpino)
+├── uart_to_spi_master/
+│   └── uart_to_spi_master.ino          <- firmware ESP32 (SPI Master, mode framed)
+├── pulpino_gpio_led.py                 <- skrip Python (kirim transaksi SPI dari komputer)
+├── build_pulpino_zybo.tcl              <- script build Vivado end-to-end (batch, tanpa GUI)
+├── zybo_pulpino_spi_led.xdc            <- constraint pin ZYBO (Pmod JE + LED0 + clock + reset)
+├── zybo_top.sv                         <- wrapper top-level (batasi port fisik yang diekspos)
+├── sp_ram_wrap_patched.sv / dp_ram_wrap_patched.sv   <- patch: memori generic, bukan IP Xilinx
+├── sp_ram_patched.sv / dp_ram_patched.sv             <- patch: BRAM inference yang benar
+└── ips_list.yml                        <- daftar 22 IP dependency PULPino
+```
 
-- ModelSim in reasonably recent version (we tested it with versions >= 10.2c)
-- CMake >= 2.8.0, versions greater than 3.1.0 recommended due to support for ninja
-- riscv-toolchain, specifically you need riscv32-unknown-elf-gcc compiler and
-  friends. There are two choices for this toolchain: Either using the official
-  RISC-V toolchain supported by Berkeley or the custom RISC-V toolchain from
-  ETH. The ETH versions supports all the ISA extensions that were incorporated
-  into the RI5CY core as well as the reduced base instruction set for zero-riscy.
-  Please make sure you are using the newlib version of the toolchain.
-- python2 >= 2.6
-- verilator 3.884 only necessary if you want to use Verilator to evaluate PULPino.
+> **Catatan:** file-file `*_patched.sv`, `zybo_top.sv`, `build_pulpino_zybo.tcl`, dan `zybo_pulpino_spi_led.xdc` **bukan bagian resmi** dari `pulp-platform/pulpino` — ini ditambahkan khusus untuk project ini, untuk mengatasi berbagai masalah build di FPGA ZYBO (lihat bagian [Masalah yang Ditemukan](#masalah-yang-ditemukan--cara-mengatasinya)).
 
-## ISA Support
+---
 
-PULPino can run either with RISCY or zero-riscy.
-The software included in this repository is compatible with both the cores
-and automatically targets the correct ISA based on the flags used.
-The simulator (modelsim) must be explicitely told which edition you want to build.
-Use the environment variable `USE_ZERO_RISCY` and set it to either `1` for zero-riscy or 
-`0` for RISCY.
+## Tutorial Lengkap
 
-## Version Control
+### 1. Menyiapkan Repository PULPino
 
-PULPino uses multiple git subrepositories
+PULPino mem-package dependency IP-nya lewat script `update-ips.py`, **bukan** git submodule biasa. Sayangnya script itu Python 2 dan menurut maintainer-nya **tidak didukung di Windows**, serta butuh akses ke tool internal ETH Zurich (`IPApproX`) yang tidak bisa diakses publik.
 
-To clone those subrepositores and update them, use
+**Solusi:** clone tiap IP secara manual dari `github.com/pulp-platform/<nama-repo>`, branch `pulpinov1` (kecuali `adv_dbg_if` yang pakai tag `Pulpino_v2.1`), sesuai daftar di `ips_list.yml`. 22 IP yang dibutuhkan:
 
-    ./update-ips.py
+```
+apb: apb_node, apb_event_unit, apb_fll_if, apb_gpio, apb_i2c, apb_pulpino,
+     apb_spi_master, apb_timer, apb_uart, apb_uart_sv, apb2per
+axi: axi2apb, axi_mem_if_DP, axi_node, axi_slice, axi_slice_dc,
+     axi_spi_master, axi_spi_slave, core2axi
+lainnya: adv_dbg_if, riscv, zero-riscy, fpu
+```
 
-This script will read the `ips_lists.txt` file and update to the versions
-specified in there. You can choose specific commits, tags or branches.
+Taruh hasil clone-nya di `ips/<kategori>/<nama-ip>/` sesuai struktur `ips_list.yml`.
 
+### 2. Build FPGA dengan Vivado
 
-## Documentation
+Semua langkah build (create project, tambah source RTL, set include directory, set macro `PULP_FPGA_EMUL`, tambah constraint, synthesis, implementation, generate bitstream) sudah otomatis lewat satu script:
 
-There is a preliminary datasheet available that includes a block diagram and a memory map of PULPino.
-See docs/datasheet/ in this repository.
+```tcl
+# Sesuaikan dulu 4 variabel di baris atas file (REPO, XDC, PROJ_DIR, PROJ_NAME)
+# Buka Vivado, lalu di Tcl Console:
+source "path/ke/build_pulpino_zybo.tcl"
+```
 
-It is written in LaTeX and there is no pdf included in the repository. Simply type
+Proses ini bisa memakan waktu cukup lama (bisa berjam-jam tergantung spesifikasi komputer) untuk synthesis penuh SoC RISC-V. Script berhenti otomatis dengan pesan jelas kalau ada tahap yang gagal.
 
-    make all
+### 3. Program FPGA lewat JTAG
 
-inside the folder to generate the pdf. Note that you need a working version of latex for this step.
+Sambungkan ZYBO ke komputer lewat port **J11** (micro-USB, kombinasi JTAG+UART), lalu di Vivado Tcl Console:
 
+```tcl
+open_hw_manager
+connect_hw_server
+open_hw_target
+current_hw_device [get_hw_devices xc7z010_1]
+refresh_hw_device -update_hw_probes false [current_hw_device]
+set_property PROGRAM.FILE {path/ke/zybo_top.bit} [current_hw_device]
+program_hw_devices [current_hw_device]
+```
 
-## Running simulations
+Setelah selesai, LED **DONE** di board ZYBO akan menyala.
 
-The software is built using CMake.
-Create a build folder somewhere, e.g. in the sw folder
+**Setel switch fisik:**
+- `SW0` = HIGH → `fetch_enable_i` (mengizinkan core RISC-V mulai jalan, meski tidak wajib untuk operasi SPI Slave)
+- `SW1` = HIGH → `rst_n` (melepas reset SoC — **wajib HIGH**, lihat catatan di bagian masalah di bawah)
 
-    mkdir build
+### 4. Upload Firmware ke ESP32
 
-Copy the cmake-configure.{*}.gcc.sh bash script to the build folder.
-This script can be found in the sw subfolder of the git repository.
+Buka `uart_to_spi_master/uart_to_spi_master.ino` di Arduino IDE, pilih board **ESP32 Dev Module**, pilih port COM yang sesuai, upload.
 
-Modify the cmake-configure script to your needs and execute it inside the build folder.
-This will setup everything to perform simulations using ModelSim.
+### 5. Wiring Fisik ESP32 ke Pmod JE
 
-Four cmake-configure bash scripts have been already configured:
+| Pmod JE | Sinyal | Pin FPGA | GPIO ESP32 |
+|---|---|---|---|
+| JE1 | `spi_clk_i` (SCK) | V12 | GPIO 18 |
+| JE2 | `spi_cs_i` (CS) | W16 | GPIO 5 |
+| JE3 | `spi_sdi0_i` (MOSI) | J15 | GPIO 23 |
+| JE4 | `spi_sdo0_o` (MISO) | H15 | GPIO 19 |
+| GND | — | — | GND |
 
-1) cmake_configure.riscv.gcc.sh
+`VCC` Pmod **tidak perlu** disambung (ESP32 punya daya sendiri dari USB). **GND wajib** disambung — koneksi longgar di GND adalah penyebab paling umum pembacaan data yang kacau.
 
-It automatically selects the RISCY cores and compiles SW with all the PULP-extensions 
-and the RV32IM support.
-The GCC ETH compiler is needed and the GCC march flag set to "IMXpulpv2".
+### 6. Menjalankan Skrip Python
 
-2) cmake_configure.riscvfloat.gcc.sh
+```bash
+pip install pyserial
+python pulpino_gpio_led.py
+```
 
-It automatically selects the RISCY cores and compiles SW with all the PULP-extensions 
-and the RV32IMF support.
-The GCC ETH compiler is needed and he GCC march flag set to "IMFXpulpv2".
+Sesuaikan `PORT` di bagian atas file dengan port COM ESP32 kamu. Pilih mode **1** untuk demo otomatis (set `PADDIR` lalu `PADOUT`, menyalakan LED0), atau mode **2** untuk menulis address+data bebas secara manual.
 
-3) cmake_configure.zeroriscy.gcc.sh
+---
 
-It automatically selects the zero-riscy cores and compiles SW with the RV32IM support
-(march flag set to RV32IM).
+## Protokol SPI Slave PULPino
 
-4) cmake_configure.microriscy.gcc.sh
+Diverifikasi langsung dari source resmi `tb/tb_spi_pkg.sv` (task `spi_write_word`, `spi_read_nword`):
 
-It automatically selects the zero-riscy cores and compiles SW with the RV32E support.
-The slim GCC ETH compiler is needed and he GCC march flag set to "RV32I" and the "-m16r"
-is passed to the compiler to use only the RV32E ISA support.
+| Elemen | Nilai |
+|---|---|
+| Command WRITE | `0x02` |
+| Command READ | `0x0B` (butuh 33 dummy clock sebelum data keluar) |
+| Urutan bit | MSB dulu |
+| Struktur transaksi | `CS low -> CMD (1 byte) -> ADDR (4 byte) -> DATA (4 byte) -> CS high`, tanpa CS naik di tengah |
 
+Alamat register GPIO yang relevan (dari datasheet PULPino):
+- `PADDIR` = `0x1A10_1000` (arah pin: 0=input, 1=output)
+- `PADOUT` = `0x1A10_1008` (nilai output)
 
-Activate the RVC flag in the cmake file if compressed instructions are desired.
+## Masalah yang Ditemukan & Cara Mengatasinya
 
+Build untuk target FPGA standalone (bukan `pulpemu_top` yang berbasis Zynq PS) ternyata punya beberapa isu yang belum terselesaikan di source resmi. Dicatat di sini supaya tidak perlu debug ulang dari nol:
 
-Inside the build folder, execute
+| Masalah | Penyebab | Solusi |
+|---|---|---|
+| `cannot open include file` | Folder `rtl/includes/` dan `ips/*/include/` belum terdaftar sebagai include directory | `set_property include_dirs` mencakup semua folder `include` secara rekursif |
+| `module 'apb_uart' not found` | Modul asli ditulis dalam **VHDL**, bukan SystemVerilog | Scan file `.vhd` juga, bukan cuma `.sv`/`.v` |
+| Konflik package FPU (`fpu_v0.1` vs `fpu_fmac`) | Dua implementasi FPU berbeda punya parameter bernama sama | Exclude `ips/fpu/` (tidak dipakai karena `RISCY_RV32F=0`) |
+| `module 'umcL65_LL_FLL' not found` | Hard macro FLL khusus ASIC UMC 65nm, tidak ada di FPGA | Define macro `PULP_FPGA_EMUL` supaya `clk_rst_gen.sv` bypass FLL |
+| `module 'xilinx_mem_8192x32' not found`, ukuran salah | `sp_ram_wrap.sv` hardcode IP Xilinx ukuran salah, tidak sesuai `RAM_SIZE` sebenarnya | Patch pakai memori generic (`sp_ram`/`dp_ram`) |
+| Over-utilization ekstrem (butuh 176.000+ LUT, cuma ada 17.600) | Memori generic dengan array packed 2D tidak ter-infer jadi BRAM, disintesis jadi ratusan ribu flip-flop | Tulis ulang dengan array 1D flat + atribut `ram_style="block"` (template resmi Xilinx UG901) |
+| `IO placement infeasible: 139 ports > 50 pins` | Modul `pulpino` punya 139 port total, jauh lebih banyak dari pin fisik yang tersedia | Buat wrapper `zybo_top.sv` yang cuma mengekspos 8 sinyal yang dipakai, sisanya di-tie off internal |
+| `Poor placement for routing between IO pin and BUFG` | `spi_clk_i` masuk lewat pin biasa, bukan pin clock khusus (CCIO) | `set_property CLOCK_DEDICATED_ROUTE FALSE` (aman untuk clock lambat 1 MHz) |
+| LED tidak menyala meski komunikasi SPI bersih | `rst_n` terhubung ke **tombol** yang default LOW saat tidak ditekan, sementara `rst_n` butuh HIGH (aktif-LOW) — SoC selalu dalam kondisi reset permanen kecuali tombol ditahan terus | Pindahkan `rst_n` ke **switch** (bisa disetel stabil HIGH), bukan tombol momentary |
 
-    make vcompile
+## Referensi
 
-to compile the RTL libraries using ModelSim.
+- A. Traber, M. Gautschi, *"PULPino: A small single-core RISC-V SoC"*, 3rd RISC-V Workshop, 2016
+- M. Gautschi et al., *"Near-Threshold RISC-V Core with DSP Extensions for Scalable IoT Endpoint Devices"*, IEEE TVLSI, 2017
+- Repository resmi: [pulp-platform/pulpino](https://github.com/pulp-platform/pulpino)
+- Digilent, *"ZYBO FPGA Board Reference Manual"*
 
-To run a simulation in the modelsim GUI use
+## Lisensi
 
-    make helloworld.vsim
-
-
-To run simulations in the modelsim console use
-
-    make helloworld.vsimc
-
-This will output a summary at the end of the simulation.
-This is intended for batch processing of a large number of tests.
-
-Replace helloworld with the test/application you want to run.
-
-
-### Using ninja instead of make
-
-You can use ninja instead make to build software for PULPino, just replace all
-occurrences of make with ninja.
-The same targets are supported on both make and ninja.
-
-
-
-## Interactive debug
-
-To interactively debug software via gdb, you need the jtag bridge as well as a
-working version of gdb for the ISA you want to debug. The debug bridge depends
-on the `jtag_dpi` package that emulates a JTAG port and provides a TCP socket
-to which the jtag bridge can connect to.
-
-
-## Utilities
-
-We additionally provide some utilitiy targets that are supposed to make
-development for PULPino easier.
-
-For disassembling a program call
-
-    make helloworld.read
-
-To regenerate the bootcode and copy it to the `rtl` folder use
-
-    make boot_code.install
-
-## FPGA
-
-PULPino can be synthesized and run on a ZedBoard.
-Take a look at the `fpga` subfolder for more information.
-
-## Creating a tarball of the PULPino sources
-
-If for some reason you don't want to use the git sub-repository approach, you
-can create a tarball of the whole design by executing `./create-tarball.py`.
-This will download the latest PULPino sources, including all IPS, remove the
-git internal folders and create a tar gz.
-
-
-## Arduino compatible libraries
-
-Most of official Arduino libraries are supported by PULPino software, they can
-be compiled, simulated and uploded the same way as traditional software programs
-using the available PULPino utilities. You only need to include main.cpp at the
-beginning of the program:
-
-	#include "main.cpp"
-
-Take a look at the `sw/libs/Arduino_libs` subfolder for more information about
-the status of the currently supported libraries.
+Source RTL PULPino (folder `rtl/`, `ips/`, `fpga/`, `tb/`, `sw/`) berlisensi **Solderpad Hardware License 0.51** dari ETH Zurich dan University of Bologna — lihat `LICENSE`. File tambahan project ini (`*.ino`, `*.py`, `*.tcl`, `*_patched.sv`, `zybo_top.sv`) mengikuti lisensi yang sama kecuali dinyatakan lain.
