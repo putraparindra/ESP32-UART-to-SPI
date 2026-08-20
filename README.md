@@ -184,10 +184,23 @@ Build untuk target FPGA standalone (bukan `pulpemu_top` yang berbasis Zynq PS) t
 
 ## Referensi
 
+**Arsitektur PULPino & RISC-V**
 - A. Traber, M. Gautschi, *"PULPino: A small single-core RISC-V SoC"*, 3rd RISC-V Workshop, 2016
 - M. Gautschi et al., *"Near-Threshold RISC-V Core with DSP Extensions for Scalable IoT Endpoint Devices"*, IEEE TVLSI, 2017
 - Repository resmi: [pulp-platform/pulpino](https://github.com/pulp-platform/pulpino)
 - Digilent, *"ZYBO FPGA Board Reference Manual"*
+
+**Konsep UART-to-SPI Bridge (posisi ESP32 di project ini)**
+- *"Design and Analysis of Multi-Protocol Conversion Unit for SPI, I2C and UART"*, IEEE, 2024 — [ieeexplore.ieee.org/document/10533106](https://ieeexplore.ieee.org/document/10533106/)
+- *"Optimal implementation of UART-SPI Interface in SoC"* — [academia.edu](https://www.academia.edu/56446056/Optimal_implementation_of_UART_SPI_Interface_in_SoC)
+- *"Design of UART Interface for SPI Flash"* — [ijsetr.com](http://ijsetr.com/uploads/346512IJSETR14446-587.pdf)
+- Texas Instruments, *"Subsystem Design: UART to SPI Bridge"* (MSPM0), app note [SLAAEK3](https://www.ti.com/lit/SLAAEK3) — format paket (start byte + indikator baca/tulis + panjang + data) yang jadi pembanding desain framing di project ini
+- Bridgetek/FTDI, *"AN_374 FT90x UART to SPI Bridge"* — [brtchip.com](https://brtchip.com/wp-content/uploads/Support/Documentation/Application_Notes/ICs/MCU/AN_374-FT90x-UART-to-SPI-Bridge.pdf)
+- [FaresMehanna/UART-to-SPI-bridge](https://github.com/FaresMehanna/UART-to-SPI-bridge) — implementasi UART-to-SPI core dalam HDL (FPGA), berbeda dari pendekatan project ini yang berbasis firmware mikrokontroler
+- [freecores/uart2spi](https://github.com/freecores/uart2spi) — core UART-to-SPI HDL open source
+- [Stulinaz/STM32F103RB_USB_to_UART_SPI_I2C](https://github.com/Stulinaz/STM32F103RB_USB_to_UART_SPI_I2C) — firmware mikrokontroler sebagai bridge multi-protokol, pendekatan paling dekat secara konsep dengan project ini (beda chip: STM32 vs ESP32)
+
+> Kombinasi spesifik *mikrokontroler eksternal sebagai UART-SPI bridge ke SPI Slave sebuah SoC RISC-V open-source di FPGA* tidak ditemukan padanan persisnya di referensi manapun di atas — bagian ini menjadi kontribusi/orisinalitas tersendiri dari project ini.
 
 ## Lisensi
 
